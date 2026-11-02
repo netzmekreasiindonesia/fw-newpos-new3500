@@ -1,0 +1,43 @@
+# Local reference material and generated code maps
+/docs/
+graphify-out/
+
+# Provision certificates and device credentials outside Git
+/resources/certs/
+*.key
+*.p12
+*.pfx
+.env
+.env.*
+!.env.example
+/config/setting.live.ini
+
+# Device/simulator output and mutable application state
+/build/
+/output/
+/obj/
+/libs/
+/npk/
+/data/
+*.o
+*.a
+*.so
+*.elf
+*.bin
+*.npk
+*.map
+*.dmp
+*.log
+*.ppm
+
+# Editor, OS and Python tool caches
+/.vscode/
+/.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+__pycache__/
+*.py[cod]
+/.venv/

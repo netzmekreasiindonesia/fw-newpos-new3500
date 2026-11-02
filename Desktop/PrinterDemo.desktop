@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Version=1.0.0
+Name=RP02N Print Demo
+Comment=BLE printer test
+Icon=/home/user0/PrinterDemo/logo.png
+Exec=/home/user0/PrinterDemo/PrinterDemo.bin
+Path=/home/user0/
+Terminal=false
