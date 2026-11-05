@@ -23,6 +23,22 @@ static int mock_watching, payment_pending;
 static struct soundbox_event payment_event;
 void mqtt_listener_watch(int enabled) { mock_watching = enabled; payment_pending = 0; }
 static int mock_mqtt_connected;
+static uint32_t tap_capture_token;
+static unsigned tap_capture_calls, tap_cancel_calls;
+static bool mock_tap_capture(uint32_t token, void *user_data)
+{
+    (void)user_data;
+    tap_capture_token = token;
+    ++tap_capture_calls;
+    return true;
+}
+
+static void mock_tap_cancel(void *user_data)
+{
+    (void)user_data;
+    ++tap_cancel_calls;
+}
+
 int mqtt_listener_connected(void) { return mock_mqtt_connected; }
 int mqtt_listener_take_success(void) { return 0; }
 int mqtt_listener_take_payment(struct soundbox_event *event)
@@ -114,10 +130,11 @@ static lv_obj_t *find_button(const char *caption)
     return label;
 }
 
-static lv_obj_t *find_image(lv_obj_t *obj, const lv_img_dsc_t *source)
+static lv_obj_t *find_image(lv_obj_t *obj, const char *source)
 {
     uint32_t i;
-    if (lv_obj_check_type(obj, &lv_img_class) && lv_img_get_src(obj) == source)
+    if (lv_obj_check_type(obj, &lv_img_class) && lv_img_get_src(obj) &&
+        !strcmp(lv_img_get_src(obj), source))
         return obj;
     for (i = 0; i < lv_obj_get_child_cnt(obj); ++i) {
         lv_obj_t *found = find_image(lv_obj_get_child(obj, i), source);
@@ -203,16 +220,16 @@ static void start_method(const char *method)
 {
     lv_area_t left, right, center;
     go_home();
-    assert(find_image(parking_screen, &soundbox_img_netzme_name));
-    assert(find_image(parking_screen, &soundbox_img_motor));
-    assert(find_image(parking_screen, &soundbox_img_calculator));
+    assert(find_image(parking_screen, soundbox_img_netzme_name));
+    assert(find_image(parking_screen, soundbox_img_motor));
+    assert(find_image(parking_screen, soundbox_img_calculator));
     capture("home");
     click("Motor");
     assert(soundbox_app_page(parking_app) == SOUNDBOX_PAYMENT);
     layout();
-    assert(find_image(find_button("QRIS MPM"), &soundbox_img_qris_white));
-    assert(find_image(find_button("QRIS Tap"), &soundbox_img_qris_tap_white));
-    assert(find_image(find_button("QRIS CPM"), &soundbox_img_qris_white));
+    assert(find_image(find_button("QRIS MPM"), soundbox_img_qris_white));
+    assert(find_image(find_button("QRIS Tap"), soundbox_img_qris_tap_white));
+    assert(find_image(find_button("QRIS CPM"), soundbox_img_qris_white));
     lv_obj_get_coords(find_button("QRIS MPM"), &left);
     lv_obj_get_coords(find_button("QRIS Tap"), &right);
     lv_obj_get_coords(find_button("QRIS CPM"), &center);
@@ -222,7 +239,7 @@ static void start_method(const char *method)
     click(method);
     layout();
     if (strcmp(method, "QRIS Tap") == 0)
-        assert(find_image(parking_screen, &soundbox_img_wait_nfc));
+        assert(find_image(parking_screen, soundbox_img_wait_nfc));
     capture(method);
 }
 
@@ -235,7 +252,7 @@ static void result(void)
     assert(find_label(parking_screen, "SIMULASI - tidak ada pembayaran nyata"));
     layout();
     result_text_visible(parking_screen);
-    assert(find_image(parking_screen, &soundbox_img_success_payment));
+    assert(find_image(parking_screen, soundbox_img_success_payment));
     capture("success");
 }
 
@@ -337,7 +354,7 @@ static void test_result(void)
     assert(soundbox_app_page(parking_app) == SOUNDBOX_RESULT);
     assert(find_button("Cetak Struk") == NULL);
     layout();
-    assert(find_image(parking_screen, &soundbox_img_failed_payment));
+    assert(find_image(parking_screen, soundbox_img_failed_payment));
     result_text_visible(parking_screen);
     capture("failure");
     advance(2999);
@@ -510,12 +527,12 @@ static void test_dq72_layout(void)
         lv_obj_update_layout(parking_screen);
         if (reference_size) {
             lv_obj_t *motor = find_button("Motor");
-            exact_bounds(find_image(parking_screen, &soundbox_img_gearblack), 10, 27, 22, 22);
-            exact_bounds(find_image(parking_screen, &soundbox_img_netzme_name), 47, 22, 119, 25);
-            exact_bounds(find_image(parking_screen, &soundbox_img_history), 180, 27, 22, 22);
+            exact_bounds(find_image(parking_screen, soundbox_img_gearblack), 10, 27, 22, 22);
+            exact_bounds(find_image(parking_screen, soundbox_img_netzme_name), 47, 22, 119, 25);
+            exact_bounds(find_image(parking_screen, soundbox_img_history), 180, 27, 22, 22);
             exact_bounds(motor, 3, 110, count <= 2 ? 206 : 101, count == 1 ? 188 : 92);
             if (count >= 3) {
-                exact_bounds(find_image(motor, &soundbox_img_motor), 33, 116, 40, 40);
+                exact_bounds(find_image(motor, soundbox_img_motor), 33, 116, 40, 40);
                 exact_bounds(find_label(motor, "Rp. 2.000"), 8, 164, 91, 16);
                 exact_bounds(find_label(motor, "Motor"), 8, 182, 91, 13);
                 exact_bounds(find_button("Sepeda"), count == 3 ? 55 : 3, 206, 101, 92);
@@ -530,9 +547,9 @@ static void test_dq72_layout(void)
         exact_bounds(find_button("QRIS MPM"), 6, 120, 100, 75);
         exact_bounds(find_button("QRIS Tap"), 106, 120, 100, 75);
         exact_bounds(find_button("QRIS CPM"), 56, 200, 100, 75);
-        exact_bounds(find_image(find_button("QRIS MPM"), &soundbox_img_qris_white), 23, 135, 67, 25);
-        exact_bounds(find_image(find_button("QRIS Tap"), &soundbox_img_qris_tap_white), 123, 138, 67, 18);
-        exact_bounds(find_image(parking_screen, &soundbox_img_netzme_small), 153, 298, 49, 10);
+        exact_bounds(find_image(find_button("QRIS MPM"), soundbox_img_qris_white), 23, 135, 67, 25);
+        exact_bounds(find_image(find_button("QRIS Tap"), soundbox_img_qris_tap_white), 123, 138, 67, 18);
+        exact_bounds(find_image(parking_screen, soundbox_img_netzme_small), 153, 298, 49, 10);
         assert(lv_obj_get_y(find_label(parking_screen, "Motor")) == 50);
         assert(lv_obj_get_y(find_label(parking_screen, "Rp. 2.000")) == 75);
         exact_bounds(lv_obj_get_child(mpm, 0), 9, 120, 95, 75);
@@ -557,8 +574,8 @@ static void test_dq72_layout(void)
     assert(soundbox_ui_show_waiting(ui, SOUNDBOX_UI_TAP, 2000));
     lv_obj_update_layout(parking_screen);
     if (reference_size) {
-        exact_bounds(find_image(parking_screen, &soundbox_img_wait_nfc), 36, 51, 140, 76);
-        exact_bounds(find_image(parking_screen, &soundbox_img_batalkan), 117, 15, 90, 22);
+        exact_bounds(find_image(parking_screen, soundbox_img_wait_nfc), 36, 51, 140, 76);
+        exact_bounds(find_image(parking_screen, soundbox_img_batalkan), 117, 15, 90, 22);
         assert(lv_obj_get_y(find_label(parking_screen, "Nominal Pembayaran")) == 135);
     }
     capture("dq72-reference-tap");
@@ -589,7 +606,7 @@ static void test_dq72_layout(void)
     assert(soundbox_ui_show_result(ui, true, 2000, "Test completion only"));
     lv_obj_update_layout(parking_screen);
     if (reference_size) {
-        exact_bounds(find_image(parking_screen, &soundbox_img_success_payment), 34, 15, 144, 136);
+        exact_bounds(find_image(parking_screen, soundbox_img_success_payment), 34, 15, 144, 136);
         exact_bounds(lv_obj_get_parent(find_button("Home")), 0, 223, 212, 95);
         assert(lv_obj_get_y(find_label(parking_screen, "Pembayaran berhasil!")) == 151);
     }
@@ -650,7 +667,7 @@ static void test_large_menu(void)
         assert(lv_obj_check_type(lv_obj_get_child(card, 0), &lv_img_class));
         assert(strcmp(lv_label_get_text(lv_obj_get_child(card, 1)), "Rp. 2.000") == 0);
         assert(strcmp(lv_label_get_text(lv_obj_get_child(card, 2)), "Motor") == 0);
-        assert(lv_img_get_zoom(find_image(card, &soundbox_img_motor)) == 256);
+        assert(lv_img_get_zoom(find_image(card, soundbox_img_motor)) == 256);
         capture("dq72-home");
     }
     for (i = 0; i < SOUNDBOX_UI_MAX_ITEMS; ++i)
@@ -715,9 +732,9 @@ static void test_persisted_view(void)
     assert(find_label(parking_screen, "Rp. 3.000"));
     go_home();
     assert(find_button("Motor") && find_label(parking_screen, "Rp. 4.000"));
-    assert(find_image(find_button("Sepeda"), &soundbox_img_sepeda));
-    assert(find_image(find_button("Elf"), &soundbox_img_elf));
-    assert(find_image(find_button("Bus"), &soundbox_img_bus));
+    assert(find_image(find_button("Sepeda"), soundbox_img_sepeda));
+    assert(find_image(find_button("Elf"), soundbox_img_elf));
+    assert(find_image(find_button("Bus"), soundbox_img_bus));
     layout();
     capture("persisted-home");
     click("Input Nominal");
@@ -800,6 +817,7 @@ static void test_live_backend(void)
     soundbox_app_config_t config = {vehicles, 1, false, false, diagnostics_show, NULL};
     struct soundbox_record record = {0};
     struct soundbox_event acknowledgement = {0};
+    char oversized[QR_REQUEST_CONTENT_MAX + 2U];
     uint32_t old_token;
     lv_obj_t *old;
     soundbox_app_destroy(parking_app);
@@ -807,6 +825,9 @@ static void test_live_backend(void)
     assert(parking_app);
     worker.state = WORKER_IDLE;
     assert(soundbox_app_set_backend(parking_app, parking_submit, NULL));
+    tap_capture_calls = tap_cancel_calls = 0;
+    assert(soundbox_app_set_tap_capture(parking_app, mock_tap_capture,
+        mock_tap_cancel, NULL));
     strcpy(record.settings.merchant_nmid, "TEST-NMID");
     record.date = 20261102;
     for (old_token = 0; old_token < SOUNDBOX_PRICE_COUNT; ++old_token)
@@ -875,12 +896,68 @@ static void test_live_backend(void)
     assert(find_label(parking_screen, "Status belum diketahui"));
     click("Home");
     click("Motor"); click("QRIS Tap");
-    assert(find_label(parking_screen, "Capture belum tersedia"));
-    assert(worker.state == WORKER_IDLE);
+    assert(soundbox_app_page(parking_app) == SOUNDBOX_TAP_CAPTURE);
+    assert(tap_capture_calls == 1 && worker.state == WORKER_IDLE);
+    old_token = tap_capture_token;
+    assert(soundbox_app_tap_capture_complete(parking_app, old_token,
+        QRIS_TAP_OK, "00A1B2FF", lv_tick_get()));
+    assert(worker.parking_job.kind == SB_JOB_QR &&
+        worker.parking_job.type == 3 && worker.parking_job.amount == 5000);
+    assert(!strcmp(worker.parking_job.qr_content, "00A1B2FF"));
+    assert(!soundbox_app_tap_capture_complete(parking_app, old_token,
+        QRIS_TAP_OK, "CC", lv_tick_get()));
+    backend_result.attempt.id = 45;
+    backend_result.accounting_status = SB_STORE_OK;
+    complete_backend(SB_BACKEND_OK);
+    assert(soundbox_app_page(parking_app) == SOUNDBOX_RESULT);
+    assert(find_label(parking_screen, "Pembayaran terkonfirmasi oleh layanan."));
+    click("Home");
+    click("Motor"); click("QRIS Tap");
+    old_token = tap_capture_token;
+    assert(soundbox_app_key(parking_app, LV_KEY_ESC));
+    assert(tap_cancel_calls == 1 &&
+        soundbox_app_page(parking_app) == SOUNDBOX_PAYMENT);
+    assert(!soundbox_app_tap_capture_complete(parking_app, old_token,
+        QRIS_TAP_OK, "AABB", lv_tick_get()));
+    click("QRIS Tap");
+    assert(soundbox_app_page(parking_app) == SOUNDBOX_TAP_CAPTURE);
+    advance(60000);
+    assert(tap_cancel_calls == 2 &&
+        soundbox_app_page(parking_app) == SOUNDBOX_RESULT);
+    assert(find_label(parking_screen, "Tidak ada permintaan dikirim."));
     click("Home");
     click("Motor"); click("QRIS CPM");
-    assert(find_label(parking_screen, "Capture belum tersedia"));
+    assert(soundbox_app_page(parking_app) == SOUNDBOX_CPM_START);
+    click("Pindai");
+    assert(soundbox_app_page(parking_app) == SOUNDBOX_CPM_SCAN);
+    assert(soundbox_app_scan_complete(parking_app, "customer-qr-123", lv_tick_get()));
+    assert(worker.parking_job.kind == SB_JOB_QR &&
+        worker.parking_job.type == 2 && worker.parking_job.amount == 5000);
+    assert(strcmp(worker.parking_job.qr_content, "customer-qr-123") == 0);
+    assert(!soundbox_app_scan_complete(parking_app, "duplicate", lv_tick_get()));
+    backend_result.attempt.id = 44;
+    backend_result.accounting_status = SB_STORE_OK;
+    complete_backend(SB_BACKEND_OK);
+    assert(soundbox_app_page(parking_app) == SOUNDBOX_RESULT);
+    assert(find_label(parking_screen, "Pembayaran terkonfirmasi oleh layanan."));
     click("Home");
+    click("Motor"); click("QRIS CPM"); click("Pindai");
+    oversized[0] = 'x';
+    memset(oversized + 1, 'x', sizeof(oversized) - 2U);
+    oversized[sizeof(oversized) - 1U] = '\0';
+    assert(!soundbox_app_scan_complete(parking_app, "", lv_tick_get()));
+    assert(worker.state == WORKER_IDLE &&
+        find_label(parking_screen, "Kode kosong atau melebihi batas yang didukung."));
+    click("Home");
+    click("Motor"); click("QRIS CPM"); click("Pindai");
+    assert(!soundbox_app_scan_complete(parking_app, oversized, lv_tick_get()));
+    assert(worker.state == WORKER_IDLE);
+    click("Home");
+    click("Motor"); click("QRIS CPM"); click("Pindai");
+    assert(soundbox_app_key(parking_app, LV_KEY_ESC));
+    assert(soundbox_app_page(parking_app) == SOUNDBOX_PAYMENT);
+    assert(worker.state == WORKER_IDLE);
+    assert(soundbox_app_key(parking_app, LV_KEY_ESC));
     assert(soundbox_app_key(parking_app, LV_KEY_UP));
     assert(soundbox_app_key(parking_app, LV_KEY_ENTER));
     assert(worker.parking_job.kind == SB_JOB_HISTORY);
@@ -1130,6 +1207,9 @@ static void test_live_worker(void)
     soundbox_app_destroy(parking_app);
     parking_app = soundbox_app_create(parking_screen, &config);
     assert(parking_app && soundbox_app_set_backend(parking_app, parking_submit, NULL));
+    tap_capture_calls = tap_cancel_calls = 0;
+    assert(soundbox_app_set_tap_capture(parking_app, mock_tap_capture,
+        mock_tap_cancel, NULL));
     assert(soundbox_app_set_record(parking_app, &store.record, SB_STORE_OK));
     mock_mqtt_connected = mqtt_available = mock_backend_response = 1;
     memset(&backend_result, 0, sizeof(backend_result));
@@ -1168,6 +1248,21 @@ static void test_live_worker(void)
             store.record.count == 2 && store.record.total == 9000);
     }
     click("Home");
+    mock_mqtt_connected = mqtt_available = 0;
+    click("Motor"); click("QRIS CPM"); click("Pindai");
+    assert(soundbox_app_scan_complete(parking_app, "EMV\\\"QR\\\\TOKEN", lv_tick_get()));
+    assert(worker.parking_job.type == 2 &&
+        strcmp(worker.parking_job.qr_content, "EMV\\\"QR\\\\TOKEN") == 0);
+    backend_result.status = SB_BACKEND_OK;
+    backend_result.submission_started = 1;
+    strcpy(backend_result.data.qr_content, "");
+    finish_parking_job();
+    assert(!store.record.pending && store.record.count == 3 &&
+        store.record.total == 11000);
+    assert(soundbox_app_page(parking_app) == SOUNDBOX_RESULT);
+    assert(!soundbox_app_waiting_payment(parking_app));
+    mock_mqtt_connected = mqtt_available = 1;
+    click("Home");
     backend_result.status = SB_BACKEND_NETWORK;
     click("Motor"); click("QRIS MPM");
     finish_parking_job();
@@ -1185,6 +1280,18 @@ static void test_live_worker(void)
     finish_parking_job();
     assert(!store.record.pending && !worker.parking_result.attempt.id);
     assert(find_label(parking_screen, "Permintaan gagal"));
+    click("Home");
+    mock_mqtt_connected = mqtt_available = 0;
+    click("Motor"); click("QRIS Tap");
+    assert(soundbox_app_tap_capture_complete(parking_app, tap_capture_token,
+        QRIS_TAP_OK, "qrvM", lv_tick_get()));
+    assert(worker.parking_job.type == 3 &&
+        !strcmp(worker.parking_job.qr_content, "qrvM"));
+    backend_result.status = SB_BACKEND_NETWORK;
+    backend_result.submission_started = 1;
+    finish_parking_job();
+    assert(store.record.pending &&
+        find_label(parking_screen, "Status belum diketahui"));
     mock_mqtt_connected = mqtt_available = mock_backend_response = 0;
 }
 

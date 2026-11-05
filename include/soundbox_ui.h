@@ -76,6 +76,7 @@ bool soundbox_ui_show_payment(soundbox_ui_t *ui, const char *vehicle,
 bool soundbox_ui_show_waiting(soundbox_ui_t *ui, soundbox_ui_method_t method,
     uint32_t amount);
 bool soundbox_ui_show_scanner(soundbox_ui_t *ui, uint32_t amount);
+const char *soundbox_ui_scan_value(const soundbox_ui_t *ui);
 bool soundbox_ui_show_processing(soundbox_ui_t *ui, uint32_t amount);
 bool soundbox_ui_show_network_wait(soundbox_ui_t *ui, const char *message);
 bool soundbox_ui_show_payment_qr(soundbox_ui_t *ui, uint32_t amount,

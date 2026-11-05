@@ -3,7 +3,7 @@
 
 #include <stddef.h>
 
-#define QR_REQUEST_CONTENT_MAX 512U
+#define QR_REQUEST_CONTENT_MAX 1024U
 
 enum qr_request_result {
     QR_REQUEST_OK,

@@ -8,38 +8,30 @@ SIMFLAGS := -I../../../sim -I../../../sim/include -I../../../sim/lvgl \
 	-I../../../app/NetzmeSB/src/libs/init -I../../../app/NetzmeSB/include \
 	-DLV_LVGL_H_INCLUDE_SIMPLE -DCFG_APP_PATH=\"/home/user0/PrinterDemo/\" -DSIM_BUILD
 
-.PHONY: check check-menus
-check: $(BUILD)/test_runner $(BUILD)/transport_test $(BUILD)/qr_request_test $(BUILD)/mqtt_test $(BUILD)/mqtt_message_test $(BUILD)/ui_test $(BUILD)/soundbox_test $(BUILD)/soundbox_full_test $(BUILD)/store_test $(BUILD)/images_test_16 $(BUILD)/images_test_32 $(BUILD)/backend_test check-menus
+.PHONY: check check-menus link-fsroot
+check: link-fsroot $(BUILD)/test_runner $(BUILD)/transport_test $(BUILD)/qr_request_test $(BUILD)/qris_tap_test $(BUILD)/mqtt_test $(BUILD)/mqtt_message_test $(BUILD)/ui_test $(BUILD)/soundbox_test $(BUILD)/soundbox_full_test $(BUILD)/store_test $(BUILD)/backend_test check-menus
 	$(BUILD)/test_runner
 	$(BUILD)/transport_test
 	$(BUILD)/qr_request_test
+	$(BUILD)/qris_tap_test
 	$(BUILD)/mqtt_test
 	$(BUILD)/mqtt_message_test
 	$(BUILD)/ui_test
 	$(BUILD)/soundbox_test
 	$(BUILD)/soundbox_full_test
 	$(BUILD)/store_test
-	$(BUILD)/images_test_16
-	$(BUILD)/images_test_32
 	$(BUILD)/backend_test
 
-$(BUILD)/backend_test: backend_test.c ../src/soundbox_backend.c ../src/soundbox_store.c ../include/soundbox_backend.h ../config/conf.h
+$(BUILD)/qris_tap_test: qris_tap_test.c ../src/qris_tap.c ../include/qris_tap.h
+	mkdir -p $(BUILD)
+	$(CC) $(CPPFLAGS) $(SIMFLAGS) $(CFLAGS) qris_tap_test.c ../src/qris_tap.c -o $@
+
+$(BUILD)/backend_test: backend_test.c ../src/soundbox_backend.c ../src/soundbox_store.c ../src/qris_tap.c ../include/soundbox_backend.h ../include/qris_tap.h ../config/conf.h
 	mkdir -p $(BUILD)
 	$(CC) $(CPPFLAGS) $(SIMFLAGS) -include ../config/conf.h \
 	    -std=gnu99 -Wall -Wextra -Werror -Wno-error=comment -ffunction-sections \
-	    backend_test.c ../src/soundbox_backend.c ../src/soundbox_store.c \
+	    backend_test.c ../src/soundbox_backend.c ../src/soundbox_store.c ../src/qris_tap.c \
 	    ../../../sim/include/cJSON.c -o $@ -lm -Wl,--gc-sections
-
-$(BUILD)/images_test_16: images_test.c ../src/soundbox_images.c ../include/soundbox_images.h
-	mkdir -p $(BUILD)
-	$(CC) $(CPPFLAGS) -I../../../toolchain/sdk/include -I../../../toolchain/sdk/include/lvgl \
-	    -DLV_CONF_INCLUDE_SIMPLE -std=gnu99 -Wall -Wextra -Werror \
-	    images_test.c ../src/soundbox_images.c -o $@
-
-$(BUILD)/images_test_32: images_test.c ../src/soundbox_images.c ../include/soundbox_images.h
-	mkdir -p $(BUILD)
-	$(CC) $(CPPFLAGS) $(SIMFLAGS) -std=gnu99 -Wall -Wextra -Werror \
-	    images_test.c ../src/soundbox_images.c -o $@
 
 $(BUILD)/test_runner: test_runner.c ../src/print_jobs.c ../include/print_jobs.h ../../../sim/lvgl/src/extra/libs/qrcode/qrcodegen.c ../../../toolchain/sdk/include/lvgl/src/extra/libs/qrcode/qrcodegen.h
 	mkdir -p $(BUILD)
@@ -75,8 +67,8 @@ SIM_OBJECTS = $(filter-out $(BUILD)/../stubs_sim_main.c.o \
 sim-objects:
 	$(MAKE) -C ../../../sim APP=PrinterDemo -j4 > /tmp/printerdemo-ui-build.log 2>&1 || { tail -c 4000 /tmp/printerdemo-ui-build.log; exit 1; }
 
-SOUNDBOX_SOURCES := ../src/soundbox_ui.c ../src/soundbox_images.c ../src/soundbox_app.c ../src/soundbox_store.c ../src/soundbox_event.c ../src/soundbox_backend.c ../src/https_client.c $(wildcard ../src/fonts/*.c)
-SOUNDBOX_HEADERS := ../include/soundbox_ui.h ../include/soundbox_images.h ../include/soundbox_fonts.h ../include/soundbox_app.h ../include/soundbox_store.h ../include/soundbox_event.h ../include/soundbox_backend.h ../include/print_jobs.h ../include/printer_transport.h $(wildcard ../src/fonts/*.[ch])
+SOUNDBOX_SOURCES := ../src/soundbox_ui.c ../src/soundbox_app.c ../src/soundbox_store.c ../src/soundbox_event.c ../src/soundbox_backend.c ../src/qris_tap.c ../src/https_client.c $(wildcard ../src/fonts/*.c)
+SOUNDBOX_HEADERS := ../include/soundbox_ui.h ../include/soundbox_images.h ../include/soundbox_fonts.h ../include/soundbox_app.h ../include/soundbox_store.h ../include/soundbox_event.h ../include/soundbox_backend.h ../include/qris_tap.h ../include/print_jobs.h ../include/printer_transport.h $(wildcard ../src/fonts/*.[ch])
 
 $(BUILD)/ui_test: ui_test.c ../src/main.c ../src/print_jobs.c ../src/printer_transport.c ../config/conf.h ../include/qr_request.h ../include/https_client.h ../include/print_jobs.h ../include/printer_transport.h $(SOUNDBOX_SOURCES) $(SOUNDBOX_HEADERS) | sim-objects
 	mkdir -p $(BUILD)
@@ -84,13 +76,17 @@ $(BUILD)/ui_test: ui_test.c ../src/main.c ../src/print_jobs.c ../src/printer_tra
 	    -std=gnu99 -g -Wall -Wextra -Werror -Wno-error=comment ui_test.c ../src/print_jobs.c ../src/printer_transport.c $(SOUNDBOX_SOURCES) \
 	    $(SIM_OBJECTS) -o $@ $$(sdl2-config --libs) -lpthread -lm -lssl -lcrypto -Wl,-T,../../../sim/sim_sections.ld
 
-check-menus: $(BUILD)/soundbox_menu_four_test $(BUILD)/soundbox_menu_manual_test
+link-fsroot:
+	ln -sfn ../../../sim/fsroot fsroot
+
+check-menus: link-fsroot $(BUILD)/soundbox_menu_four_test $(BUILD)/soundbox_menu_manual_test
 	$(BUILD)/soundbox_menu_four_test
 	$(BUILD)/soundbox_menu_manual_test
 
 $(BUILD)/soundbox_menu_four_test: CPPFLAGS += -DSOUNDBOX_MENU_MOTOR=1 -DSOUNDBOX_MENU_MOBIL=1 -DSOUNDBOX_MENU_SEPEDA=1 -DSOUNDBOX_MENU_ELF=0 -DSOUNDBOX_MENU_BUS=1 -DSOUNDBOX_MENU_MANUAL=0
 $(BUILD)/soundbox_menu_manual_test: CPPFLAGS += -DSOUNDBOX_MENU_MOTOR=0 -DSOUNDBOX_MENU_MOBIL=0 -DSOUNDBOX_MENU_SEPEDA=0 -DSOUNDBOX_MENU_ELF=0 -DSOUNDBOX_MENU_BUS=0 -DSOUNDBOX_MENU_MANUAL=1
 $(BUILD)/soundbox_full_test: CPPFLAGS += -DSOUNDBOX_MENU_MOTOR=1 -DSOUNDBOX_MENU_MOBIL=1 -DSOUNDBOX_MENU_SEPEDA=1 -DSOUNDBOX_MENU_ELF=1 -DSOUNDBOX_MENU_BUS=1 -DSOUNDBOX_MENU_MANUAL=1
+$(BUILD)/soundbox_test $(BUILD)/soundbox_full_test $(BUILD)/soundbox_menu_four_test $(BUILD)/soundbox_menu_manual_test: CPPFLAGS += -DSOUNDBOX_CPM_LIVE_ENABLED=1 -DSOUNDBOX_TAP_LIVE_ENABLED=1
 
 $(BUILD)/soundbox_test $(BUILD)/soundbox_full_test $(BUILD)/soundbox_menu_four_test $(BUILD)/soundbox_menu_manual_test: soundbox_test.c ../src/main.c $(SOUNDBOX_SOURCES) $(SOUNDBOX_HEADERS) ../src/print_jobs.c ../src/printer_transport.c ../config/conf.h | sim-objects
 	mkdir -p $(BUILD)

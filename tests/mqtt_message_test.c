@@ -23,8 +23,8 @@ static int fail_dns;
 static int fail_workdir;
 static int ssl_references;
 static char last_log[512];
-static char payload_log[4096];
-static int capture_payload;
+static char captured_logs[1024];
+static int capture_logs;
 static int cert_marker;
 static int name_marker;
 static int store_marker;
@@ -226,34 +226,23 @@ int logger_level_printf(int level, int flags, const char *module,
     va_start(arguments, format);
     vsnprintf(last_log, sizeof(last_log), format, arguments);
     va_end(arguments);
-    if (capture_payload && strncmp(last_log, "MQTT payload ", 13) == 0) {
-        size_t used = strlen(payload_log);
-        assert(used + strlen(last_log) < sizeof(payload_log));
-        strcpy(payload_log + used, last_log);
+    if (capture_logs) {
+        size_t used = strlen(captured_logs);
+        assert(used + strlen(last_log) < sizeof(captured_logs));
+        strcpy(captured_logs + used, last_log);
     }
     return 0;
 }
 
-static void test_payload_logging(void)
+static void test_payload_not_logged(void)
 {
-    uint8_t message[637];
-    capture_payload = 1;
-    memset(message, 'A', sizeof(message));
-    memcpy(message + 630, "THE_END", 7);
-    payload_log[0] = '\0';
-    log_payload(message, sizeof(message));
-    assert(strstr(payload_log, "MQTT payload [0..96)/637: ") != NULL);
-    assert(strstr(payload_log, "MQTT payload [576..637)/637: ") != NULL);
-    assert(strstr(payload_log, "THE_END\n") != NULL);
-    memset(message, 0, 96);
-    message[1] = '\n';
-    message[2] = 0xff;
-    payload_log[0] = '\0';
-    log_payload(message, 96);
-    assert(strstr(payload_log, "\\x00\\x0a\\xff") != NULL);
-    assert(strlen(last_log) < sizeof(last_log) - 1U);
-    payload_log[0] = '\0';
-    capture_payload = 0;
+    static const uint8_t message[] = "PRIVATE_PAYLOAD_SENTINEL";
+    captured_logs[0] = '\0';
+    capture_logs = 1;
+    on_message(message, sizeof(message) - 1U);
+    capture_logs = 0;
+    assert(strstr(captured_logs, "bytes") != NULL);
+    assert(strstr(captured_logs, "PRIVATE_PAYLOAD_SENTINEL") == NULL);
 }
 
 static void deliver(const char *message)
@@ -416,9 +405,9 @@ int main(void)
     unsigned int pause, i;
 
     assert(pthread_mutex_init(&mutex, NULL) == 0);
-    test_payload_logging();
     mutex_ready = 1;
     running = 1;
+    test_payload_not_logged();
     assert(verify_certificate(1, NULL) == 1);
     assert(verify_certificate(0, (WOLFSSL_X509_STORE_CTX *)&store_marker) == 0);
     assert(strstr(last_log, "certificate issuer: test CA") != NULL);

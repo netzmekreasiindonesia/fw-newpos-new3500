@@ -1,9 +1,14 @@
 #include "soundbox_ui.h"
 #include "soundbox_images.h"
 #include "soundbox_fonts.h"
+#include "qr_request.h"
 
 #include <stdio.h>
 #include <string.h>
+
+#ifndef SIM_BUILD
+#include <lv_scanner.h>
+#endif
 
 #if LVGL_VERSION_MAJOR != 8 || LVGL_VERSION_MINOR != 3
 #error "The soundbox UI requires LVGL 8.3.x"
@@ -32,12 +37,16 @@ struct soundbox_ui {
     lv_obj_t *home_button;
     lv_obj_t *result_status;
     lv_obj_t *payment_timer;
+#ifndef SIM_BUILD
+    lv_obj_t *scanner;
+#endif
     lv_group_t *group;
     soundbox_ui_config_t config;
     binding_t bindings[MAX_BINDINGS];
     size_t binding_count;
     uint32_t amount;
     char status[96];
+    char scan_value[QR_REQUEST_CONTENT_MAX + 1U];
     bool compact;
     bool result;
     bool ok;
@@ -173,13 +182,23 @@ static lv_obj_t *flow(soundbox_ui_t *ui, lv_obj_t *parent,
     return obj;
 }
 
+static lv_img_header_t image_header(const char *source)
+{
+    lv_img_header_t header = {0};
+    if (lv_img_decoder_get_info(source, &header) != LV_RES_OK)
+        LV_LOG_ERROR("Soundbox image missing: %s", source);
+    return header;
+}
+
 static lv_obj_t *image(soundbox_ui_t *ui, lv_obj_t *parent,
-    const lv_img_dsc_t *source, lv_coord_t max_width, lv_coord_t max_height)
+    const char *source, lv_coord_t max_width, lv_coord_t max_height)
 {
     lv_obj_t *obj;
     uint32_t zoom, height_zoom;
+    lv_img_header_t header;
     if (!ui->ok || !parent)
         return NULL;
+    header = image_header(source);
     obj = lv_img_create(parent);
     if (!obj) {
         LV_LOG_ERROR("Soundbox image allocation failed");
@@ -187,10 +206,10 @@ static lv_obj_t *image(soundbox_ui_t *ui, lv_obj_t *parent,
         return NULL;
     }
     zoom = 256U;
-    if (source->header.w > max_width || source->header.h > max_height) {
+    if (header.w && header.h && (header.w > max_width || header.h > max_height)) {
         /* Reserve the transformed image's antialiasing border. */
-        zoom = (uint32_t)(max_width - 5) * 256U / source->header.w;
-        height_zoom = (uint32_t)(max_height - 5) * 256U / source->header.h;
+        zoom = (uint32_t)(max_width - 5) * 256U / header.w;
+        height_zoom = (uint32_t)(max_height - 5) * 256U / header.h;
         if (zoom > height_zoom)
             zoom = height_zoom;
     }
@@ -240,7 +259,7 @@ static lv_obj_t *button(soundbox_ui_t *ui, lv_obj_t *parent,
 }
 
 static lv_obj_t *picture_button(soundbox_ui_t *ui, lv_obj_t *parent,
-    const char *caption, const lv_img_dsc_t *source,
+    const char *caption, const char *source,
     lv_coord_t width, lv_coord_t height, lv_coord_t image_height,
     soundbox_ui_action_t action, uint32_t value, uint32_t amount)
 {
@@ -253,7 +272,7 @@ static lv_obj_t *picture_button(soundbox_ui_t *ui, lv_obj_t *parent,
     lv_obj_set_flex_align(obj, LV_FLEX_ALIGN_CENTER,
         LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(obj, 2, 0);
-    icon = image(ui, obj, source, source->header.w, image_height);
+    icon = image(ui, obj, source, image_header(source).w, image_height);
     if (icon)
         lv_obj_move_to_index(icon, 0);
     return obj;
@@ -264,6 +283,12 @@ static bool page(soundbox_ui_t *ui, const char *title, bool back, bool blue)
     lv_obj_t *header, *heading;
     if (!ui || !ui->root)
         return invalid();
+#ifndef SIM_BUILD
+    if (ui->scanner) {
+        lv_scanner_stop(ui->scanner);
+        ui->scanner = NULL;
+    }
+#endif
     lv_group_remove_all_objs(ui->group);
     lv_obj_clean(ui->root);
     ui->binding_count = 0;
@@ -291,7 +316,7 @@ static bool page(soundbox_ui_t *ui, const char *title, bool back, bool blue)
             lv_obj_set_style_bg_color(header, lv_color_hex(BLUE), 0);
             lv_obj_set_style_bg_opa(header, LV_OPA_COVER, 0);
             if (back)
-                picture_button(ui, header, "", &soundbox_img_btn_back,
+                picture_button(ui, header, "", soundbox_img_btn_back,
                     48, 48, 21, SOUNDBOX_UI_BACK, 0, 0);
             heading = label(ui, header, title, blue ? WHITE : BLACK, false);
             if (heading) {
@@ -346,12 +371,13 @@ static lv_obj_t *placed_label(soundbox_ui_t *ui, lv_obj_t *parent,
 }
 
 static lv_obj_t *placed_image(soundbox_ui_t *ui, lv_obj_t *parent,
-    const lv_img_dsc_t *source, lv_coord_t x, lv_coord_t y)
+    const char *source, lv_coord_t x, lv_coord_t y)
 {
-    lv_obj_t *obj = image(ui, parent, source, source->header.w, source->header.h);
+    lv_img_header_t header = image_header(source);
+    lv_obj_t *obj = image(ui, parent, source, header.w, header.h);
     if (obj)
-        lv_obj_set_pos(obj, sx(ui, x) + (sx(ui, source->header.w) - source->header.w) / 2,
-            sy(ui, y) + (sy(ui, source->header.h) - source->header.h) / 2);
+        lv_obj_set_pos(obj, sx(ui, x) + (sx(ui, header.w) - header.w) / 2,
+            sy(ui, y) + (sy(ui, header.h) - header.h) / 2);
     return obj;
 }
 
@@ -419,7 +445,7 @@ static void logo_footer(soundbox_ui_t *ui, lv_coord_t height)
     lv_obj_t *footer = object(ui, ui->body);
     bounds(ui, footer, 0, 318 - height, 212, height);
     if (footer) {
-        lv_obj_t *logo = image(ui, footer, &soundbox_img_netzme_small, 49, 10);
+        lv_obj_t *logo = image(ui, footer, soundbox_img_netzme_small, 49, 10);
         lv_obj_set_style_bg_color(footer, lv_color_hex(WHITE), 0);
         lv_obj_set_style_bg_opa(footer, LV_OPA_COVER, 0);
         if (logo)
@@ -430,8 +456,39 @@ static void logo_footer(soundbox_ui_t *ui, lv_coord_t height)
 static void root_deleted(lv_event_t *event)
 {
     soundbox_ui_t *ui = lv_event_get_user_data(event);
+#ifndef SIM_BUILD
+    if (ui->scanner) {
+        lv_scanner_stop(ui->scanner);
+        ui->scanner = NULL;
+    }
+#endif
     ui->root = NULL;
 }
+
+#ifndef SIM_BUILD
+static void scanner_value_changed(lv_event_t *event)
+{
+    soundbox_ui_t *ui = lv_event_get_user_data(event);
+    lv_obj_t *scanner = lv_event_get_target(event);
+    const char *value = lv_scanner_get_value(scanner);
+    size_t length = 0;
+
+    lv_scanner_stop(scanner);
+    ui->scanner = NULL;
+    if (value) {
+        while (length <= QR_REQUEST_CONTENT_MAX && value[length])
+            ++length;
+    }
+    if (!value || !length || length > QR_REQUEST_CONTENT_MAX) {
+        ui->scan_value[0] = '\0';
+        LV_LOG_ERROR("Scanner returned empty or oversized QR content");
+    } else {
+        memcpy(ui->scan_value, value, length);
+        ui->scan_value[length] = '\0';
+    }
+    emit(ui, (soundbox_ui_event_t){SOUNDBOX_UI_SCAN, 1, 0});
+}
+#endif
 
 soundbox_ui_t *soundbox_ui_create(lv_obj_t *parent,
     const soundbox_ui_config_t *config)
@@ -516,18 +573,18 @@ bool soundbox_ui_key(soundbox_ui_t *ui, uint32_t key)
     return true;
 }
 
-static const lv_img_dsc_t *vehicle_image(const char *name)
+static const char *vehicle_image(const char *name)
 {
     static const char *const names[] = {"Motor", "Mobil", "Sepeda", "Elf", "Bus", "Truk / Bus"};
-    static const lv_img_dsc_t *const images[] = {
-        &soundbox_img_motor, &soundbox_img_mobil, &soundbox_img_sepeda,
-        &soundbox_img_elf, &soundbox_img_bus, &soundbox_img_bus
+    static const char *const images[] = {
+        soundbox_img_motor, soundbox_img_mobil, soundbox_img_sepeda,
+        soundbox_img_elf, soundbox_img_bus, soundbox_img_bus
     };
     size_t i;
     for (i = 0; i < sizeof(images) / sizeof(images[0]); ++i)
         if (strcmp(text(name), names[i]) == 0)
             return images[i];
-    return &soundbox_img_calculator;
+    return soundbox_img_calculator;
 }
 
 static lv_obj_t *vehicle_cards(soundbox_ui_t *ui,
@@ -555,7 +612,7 @@ static lv_obj_t *vehicle_cards(soundbox_ui_t *ui,
         lv_coord_t x, icon_y;
         lv_obj_t *obj, *icon, *price, *name;
         const char *caption_name = is_manual ? "Input Nominal" : vehicles[i].name;
-        const lv_img_dsc_t *source = is_manual ? &soundbox_img_calculator :
+        const char *source = is_manual ? soundbox_img_calculator :
             vehicle_image(vehicles[i].name);
         if (in_row > columns)
             in_row = columns;
@@ -610,14 +667,14 @@ bool soundbox_ui_show_home(soundbox_ui_t *ui, const char *merchant,
         SOUNDBOX_UI_SETTINGS, 0, 0, false);
     if (settings) {
         lv_obj_set_style_bg_opa(settings, LV_OPA_TRANSP, 0);
-        placed_image(ui, settings, &soundbox_img_gearblack, 0, 0);
+        placed_image(ui, settings, soundbox_img_gearblack, 0, 0);
     }
-    placed_image(ui, ui->body, &soundbox_img_netzme_name, 47, 22);
+    placed_image(ui, ui->body, soundbox_img_netzme_name, 47, 22);
     history = flat_button(ui, ui->body, "", 180, 27, 22, 22,
         SOUNDBOX_UI_HISTORY, 0, 0, false);
     if (history) {
         lv_obj_set_style_bg_opa(history, LV_OPA_TRANSP, 0);
-        placed_image(ui, history, &soundbox_img_history, 0, 0);
+        placed_image(ui, history, soundbox_img_history, 0, 0);
     }
     merchant_label = placed_label(ui, ui->body, merchant, &spacemonorbold11,
         BLACK, 3, strchr(text(merchant), '\n') ? 46 : 62, 206);
@@ -726,7 +783,7 @@ bool soundbox_ui_show_payment(soundbox_ui_t *ui, const char *vehicle,
                 lv_obj_set_style_radius(box, 10, 0);
             }
             placed_image(ui, obj, method == SOUNDBOX_UI_TAP ?
-                &soundbox_img_qris_tap_white : &soundbox_img_qris_white,
+                soundbox_img_qris_tap_white : soundbox_img_qris_white,
                 17, method == SOUNDBOX_UI_TAP ? 18 : 15);
             placed_label(ui, obj, captions[method], &spacemonorbold8,
                 WHITE, 3, 44, 95);
@@ -764,12 +821,12 @@ static void payment_brand(soundbox_ui_t *ui, bool tap)
 {
     lv_obj_t *cancel;
     placed_image(ui, ui->body, tap ?
-        &soundbox_img_qris_tap_black : &soundbox_img_qris_black, 5, 15);
+        soundbox_img_qris_tap_black : soundbox_img_qris_black, 5, 15);
     cancel = flat_button(ui, ui->body, "", 117, 15, 90, 22,
         SOUNDBOX_UI_BACK, 0, 0, false);
     if (cancel) {
         lv_obj_set_style_bg_opa(cancel, LV_OPA_TRANSP, 0);
-        placed_image(ui, cancel, &soundbox_img_batalkan, 0, 0);
+        placed_image(ui, cancel, soundbox_img_batalkan, 0, 0);
     }
 }
 
@@ -780,6 +837,7 @@ static void waiting_amount(soundbox_ui_t *ui, uint32_t amount)
     label(ui, ui->body, formatted, BLACK, true);
 }
 
+#ifdef SIM_BUILD
 static void scanner_corners(soundbox_ui_t *ui, lv_obj_t *preview)
 {
     static const lv_point_t horizontal[] = {{0, 0}, {16, 0}};
@@ -804,6 +862,7 @@ static void scanner_corners(soundbox_ui_t *ui, lv_obj_t *preview)
             i / 2 >= 2 ? -6 : 6);
     }
 }
+#endif
 
 bool soundbox_ui_show_waiting(soundbox_ui_t *ui, soundbox_ui_method_t method,
     uint32_t amount)
@@ -829,7 +888,7 @@ bool soundbox_ui_show_waiting(soundbox_ui_t *ui, soundbox_ui_method_t method,
         logo_footer(ui, 20);
     } else if (method == SOUNDBOX_UI_TAP) {
         payment_brand(ui, true);
-        placed_image(ui, ui->body, &soundbox_img_wait_nfc, 36, 51);
+        placed_image(ui, ui->body, soundbox_img_wait_nfc, 36, 51);
         placed_label(ui, ui->body, "Nominal Pembayaran", &spacemonorbold12,
             BLACK, 0, 135, 212);
         placed_label(ui, ui->body, formatted, &spacemonorbold10, BLACK, 0, 161, 212);
@@ -853,10 +912,17 @@ bool soundbox_ui_show_waiting(soundbox_ui_t *ui, soundbox_ui_method_t method,
         logo_footer(ui, 30);
         fixed_simulation_controls(ui);
     }
-    placed_label(ui, ui->body, ui->config.simulation ?
-        "SIMULASI - bukan pembayaran" :
-        "Pratinjau: layanan pembayaran belum aktif.",
-        &spacemonoreg6, BLACK, 0, method == SOUNDBOX_UI_CPM ? 60 : 290, 212);
+    if (method == SOUNDBOX_UI_CPM && !ui->config.simulation)
+        placed_label(ui, ui->body, "Siapkan QR pembayaran pelanggan.",
+            &spacemonoreg6, BLACK, 0, 60, 212);
+    else if (method == SOUNDBOX_UI_TAP && !ui->config.simulation)
+        placed_label(ui, ui->body, "Menunggu satu kartu NFC.",
+            &spacemonoreg6, BLACK, 0, 290, 212);
+    else
+        placed_label(ui, ui->body, ui->config.simulation ?
+            "SIMULASI - bukan pembayaran" :
+            "Pratinjau: layanan pembayaran belum aktif.",
+            &spacemonoreg6, BLACK, 0, method == SOUNDBOX_UI_CPM ? 60 : 290, 212);
     return ui->ok;
 }
 
@@ -866,6 +932,7 @@ bool soundbox_ui_show_scanner(soundbox_ui_t *ui, uint32_t amount)
     char formatted[32];
     if (!fixed_page(ui, "QRIS CPM", true, false))
         return false;
+#ifdef SIM_BUILD
     preview = object(ui, ui->body);
     bounds(ui, preview, 8, 50, 196, 150);
     if (preview) {
@@ -876,12 +943,35 @@ bool soundbox_ui_show_scanner(soundbox_ui_t *ui, uint32_t amount)
             &spacemonoreg8, WHITE, 0, 55, 196);
         scanner_corners(ui, preview);
     }
+#else
+    preview = lv_scanner_create(ui->body);
+    if (!preview) {
+        LV_LOG_ERROR("QR scanner could not be created");
+        return false;
+    }
+    ui->scanner = preview;
+    bounds(ui, preview, 8, 50, 196, 150);
+    lv_scanner_set_formats(preview, S_FORMAT_QR_CODE);
+    lv_scanner_set_preview_align(preview, 0, 0);
+    lv_scanner_set_beep(preview, true);
+    lv_obj_add_event_cb(preview, scanner_value_changed,
+        LV_EVENT_VALUE_CHANGED, ui);
+    ui->scan_value[0] = '\0';
+    lv_scanner_start(preview);
+#endif
     payment_money(amount, formatted);
     placed_label(ui, ui->body, formatted, &spacemonorbold14, BLACK, 0, 210, 212);
+#ifdef SIM_BUILD
     fixed_simulation_controls(ui);
     placed_label(ui, ui->body, "Tidak ada kamera aktif pada pratinjau.",
         &spacemonoreg6, BLACK, 0, 290, 212);
+#endif
     return ui->ok;
+}
+
+const char *soundbox_ui_scan_value(const soundbox_ui_t *ui)
+{
+    return ui ? ui->scan_value : NULL;
 }
 
 bool soundbox_ui_show_processing(soundbox_ui_t *ui, uint32_t amount)
@@ -889,8 +979,11 @@ bool soundbox_ui_show_processing(soundbox_ui_t *ui, uint32_t amount)
     if (!page(ui, "Memproses pembayaran", true, false))
         return false;
     waiting_amount(ui, amount);
-    label(ui, ui->body, "Pratinjau alur HTTPS.\nTidak ada permintaan dikirim.", BLACK, false);
-    simulation_controls(ui);
+    if (ui->config.simulation) {
+        label(ui, ui->body, "SIMULASI - tidak ada pembayaran nyata", BLACK, false);
+        simulation_controls(ui);
+    } else
+        label(ui, ui->body, "Mengirim QR pelanggan ke layanan pembayaran.", BLACK, false);
     return ui->ok;
 }
 
@@ -964,8 +1057,8 @@ bool soundbox_ui_show_result(soundbox_ui_t *ui, bool success,
     if (!fixed_page(ui, "", false, true))
         return false;
     ui->result = true;
-    placed_image(ui, ui->body, success ? &soundbox_img_success_payment :
-        &soundbox_img_failed_payment, success ? 34 : 33, 15);
+    placed_image(ui, ui->body, success ? soundbox_img_success_payment :
+        soundbox_img_failed_payment, success ? 34 : 33, 15);
     placed_label(ui, ui->body, success ? "Pembayaran berhasil!" : "Pembayaran gagal!",
         &spacemonorbold11, WHITE, 0, 151, 212);
     money(amount, formatted);
@@ -998,8 +1091,8 @@ bool soundbox_ui_show_result(soundbox_ui_t *ui, bool success,
     ui->home_button = flat_button(ui, footer, "Home", success ? 108 : 3, 27,
         success ? 101 : 206, 28,
         SOUNDBOX_UI_DONE, 0, 0, false);
-    placed_image(ui, footer, &soundbox_img_tokonetzme, 3, 58);
-    placed_image(ui, footer, &soundbox_img_qris_tap_black, 123, 65);
+    placed_image(ui, footer, soundbox_img_tokonetzme, 3, 58);
+    placed_image(ui, footer, soundbox_img_qris_tap_black, 123, 65);
     if (ui->print_button)
         lv_group_focus_obj(ui->print_button);
     return ui->ok;

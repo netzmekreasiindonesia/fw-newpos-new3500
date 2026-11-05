@@ -11,6 +11,21 @@
 #define SOUNDBOX_BACKEND_QR_PATH "/api/v2/device/generate-qr"
 #define SOUNDBOX_BACKEND_CA CFG_APP_PATH "resources/certs/stg/backend-ca.pem"
 
+/* Enable only after the backend's CPM success and reconciliation contract is approved. */
+#ifndef SOUNDBOX_CPM_LIVE_ENABLED
+#define SOUNDBOX_CPM_LIVE_ENABLED 1
+#endif
+#if SOUNDBOX_CPM_LIVE_ENABLED != 0 && SOUNDBOX_CPM_LIVE_ENABLED != 1
+#error "SOUNDBOX_CPM_LIVE_ENABLED must be 0 or 1"
+#endif
+
+#ifndef SOUNDBOX_TAP_LIVE_ENABLED
+#define SOUNDBOX_TAP_LIVE_ENABLED 1
+#endif
+#if SOUNDBOX_TAP_LIVE_ENABLED != 0 && SOUNDBOX_TAP_LIVE_ENABLED != 1
+#error "SOUNDBOX_TAP_LIVE_ENABLED must be 0 or 1"
+#endif
+
 #ifndef SOUNDBOX_MENU_MOTOR
 #define SOUNDBOX_MENU_MOTOR 1
 #endif
@@ -18,10 +33,10 @@
 #define SOUNDBOX_MENU_MOBIL 1
 #endif
 #ifndef SOUNDBOX_MENU_SEPEDA
-#define SOUNDBOX_MENU_SEPEDA 1
+#define SOUNDBOX_MENU_SEPEDA 0
 #endif
 #ifndef SOUNDBOX_MENU_ELF
-#define SOUNDBOX_MENU_ELF 1
+#define SOUNDBOX_MENU_ELF 0
 #endif
 #ifndef SOUNDBOX_MENU_BUS
 #define SOUNDBOX_MENU_BUS 0

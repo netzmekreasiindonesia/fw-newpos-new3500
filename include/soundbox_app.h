@@ -5,6 +5,7 @@
 #include "soundbox_store.h"
 #include "soundbox_backend.h"
 #include "soundbox_event.h"
+#include "qris_tap.h"
 
 typedef struct soundbox_app soundbox_app_t;
 
@@ -38,10 +39,19 @@ bool soundbox_app_set_record(soundbox_app_t *app,
     const struct soundbox_record *record, int status);
 void soundbox_app_updates_lost(soundbox_app_t *app);
 typedef bool (*soundbox_submit_cb)(const struct soundbox_backend_job *, void *);
+typedef bool (*soundbox_tap_capture_cb)(uint32_t token, void *);
+typedef void (*soundbox_tap_cancel_cb)(void *);
 bool soundbox_app_set_backend(soundbox_app_t *app, soundbox_submit_cb submit,
+    void *user_data);
+bool soundbox_app_set_tap_capture(soundbox_app_t *app,
+    soundbox_tap_capture_cb capture, soundbox_tap_cancel_cb cancel,
     void *user_data);
 bool soundbox_app_backend_complete(soundbox_app_t *app,
     const struct soundbox_backend_result *result, uint32_t now);
+bool soundbox_app_tap_capture_complete(soundbox_app_t *app, uint32_t token,
+    enum qris_tap_result result, const char *content, uint32_t now);
+bool soundbox_app_scan_complete(soundbox_app_t *app, const char *content,
+    uint32_t now);
 bool soundbox_app_waiting_payment(const soundbox_app_t *app);
 bool soundbox_app_acknowledge(soundbox_app_t *app, const struct soundbox_event *event);
 void soundbox_app_mqtt_status(soundbox_app_t *app, bool connected);

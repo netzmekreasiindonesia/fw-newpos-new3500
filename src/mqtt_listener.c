@@ -166,27 +166,6 @@ static int certificate_readable(const char *path)
     return 1;
 }
 
-static void log_payload(const uint8_t *message, size_t length)
-{
-    size_t offset;
-    for (offset = 0; offset < length; offset += 96U) {
-        char text[96U * 4U + 1U];
-        size_t i, used = 0;
-        size_t count = length - offset < 96U ? length - offset : 96U;
-        for (i = 0; i < count; ++i) {
-            unsigned char byte = message[offset + i];
-            if (byte >= 0x20 && byte <= 0x7e)
-                text[used++] = (char)byte;
-            else
-                used += (size_t)snprintf(text + used, sizeof(text) - used,
-                    "\\x%02x", (unsigned)byte);
-        }
-        text[used] = '\0';
-        logger_info("MQTT payload [%u..%u)/%u: %s\n",
-            (unsigned)offset, (unsigned)(offset + count), (unsigned)length, text);
-    }
-}
-
 static void on_message(const uint8_t *message, size_t length)
 {
     struct soundbox_event event;
@@ -200,7 +179,6 @@ static void on_message(const uint8_t *message, size_t length)
     pthread_mutex_unlock(&mutex);
     logger_info("MQTT incoming PUBLISH on %s: %u bytes\n",
         MQTT_TOPIC, (unsigned)length);
-    log_payload(message, length);
     if (soundbox_event_parse(message, length, &event) != 0) {
         logger_warn("MQTT incoming business message rejected by parser\n");
         return;

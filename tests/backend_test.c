@@ -170,12 +170,30 @@ int main(void)
     job.type = 2;
     execute(&job, "{}", SB_BACKEND_INVALID);
     assert(calls == before);
-    strcpy(job.qr_content, "captured-qr");
+    strcpy(job.qr_content, "captured-\\\"qr\\\\token");
     execute(&job, "{\"status\":200,\"data\":{\"qr_content\":\"\"}}", SB_BACKEND_OK);
-    assert(strstr(request, "\"type\":2") && strstr(request, "captured-qr"));
+    assert(strstr(request, "\"type\":2"));
+    json = cJSON_Parse(request);
+    assert(json);
+    assert(strcmp(cJSON_GetObjectItem(json, "qr_content")->valuestring,
+        "captured-\\\"qr\\\\token") == 0);
+    cJSON_Delete(json);
     job.type = 3;
-    execute(&job, "{\"status\":200,\"data\":{\"qr_content\":\"\"}}", SB_BACKEND_OK);
+    strcpy(job.qr_content, "00A1B2FF");
+    execute(&job, "{\"status\":200,\"data\":{\"qr_content\":\"accepted\"}}", SB_BACKEND_OK);
     assert(strstr(request, "\"type\":3"));
+    json = cJSON_Parse(request);
+    assert(json);
+    assert(strcmp(cJSON_GetObjectItem(json, "qr_content")->valuestring,
+        "00A1B2FF") == 0);
+    cJSON_Delete(json);
+    /* The backend acknowledges Tap with an empty qr_content */
+    execute(&job, "{\"status\":200,\"data\":{\"qr_content\":\"\"}}", SB_BACKEND_OK);
+    execute(&job, "{\"status\":200,\"data\":{}}", SB_BACKEND_INVALID);
+    strcpy(job.qr_content, "not-base64");
+    before = calls;
+    execute(&job, "{}", SB_BACKEND_INVALID);
+    assert(calls == before);
 
     job.kind = SB_JOB_HISTORY;
     execute(&job, "{\"data\":{\"transactions\":[]}}", SB_BACKEND_OK);

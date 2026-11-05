@@ -49,6 +49,7 @@ struct soundbox_backend_result {
     enum soundbox_job_kind kind;
     uint32_t token;
     enum soundbox_backend_status status;
+    int accounting_status;
     int http_status;
     int submission_started;
     struct soundbox_attempt attempt;

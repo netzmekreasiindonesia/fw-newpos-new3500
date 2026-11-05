@@ -32,6 +32,10 @@ struct soundbox_app {
     size_t stored_vehicle_count;
     soundbox_submit_cb submit;
     void *backend_user_data;
+    soundbox_tap_capture_cb tap_capture;
+    soundbox_tap_cancel_cb tap_cancel;
+    void *tap_user_data;
+    bool tap_capture_pending;
     struct soundbox_attempt attempt;
     struct print_receipt receipt;
     char receipt_event_type[64];
@@ -249,10 +253,19 @@ static void back(soundbox_app_t *app)
         } else
             soundbox_app_home(app);
         break;
-    case SOUNDBOX_MPM_WAIT:
-    case SOUNDBOX_TAP_CAPTURE:
     case SOUNDBOX_CPM_START:
     case SOUNDBOX_CPM_SCAN:
+        ++app->token;
+        show_payment(app);
+        break;
+    case SOUNDBOX_TAP_CAPTURE:
+        ++app->token;
+        if (app->tap_capture_pending && app->tap_cancel)
+            app->tap_cancel(app->tap_user_data);
+        app->tap_capture_pending = false;
+        show_payment(app);
+        break;
+    case SOUNDBOX_MPM_WAIT:
     case SOUNDBOX_REQUEST:
         ++app->token;
         if (app->submit)
@@ -384,9 +397,17 @@ static void event_received(soundbox_ui_t *ui,
         app->started = now;
         if (app->submit) {
             struct soundbox_backend_job job = {0};
-            if (app->method != SOUNDBOX_UI_MPM) {
-                notice(app, "Capture belum tersedia",
-                    "Tap / CPM belum terhubung ke NFC / kamera. Tidak ada permintaan dikirim.");
+            if (app->method == SOUNDBOX_UI_TAP) {
+                if (!SOUNDBOX_TAP_LIVE_ENABLED) {
+                    notice(app, "QRIS Tap belum diaktifkan",
+                        "Perlu kualifikasi NFC dan persetujuan layanan.");
+                    break;
+                }
+            }
+            if (app->method == SOUNDBOX_UI_CPM &&
+                !SOUNDBOX_CPM_LIVE_ENABLED) {
+                notice(app, "CPM belum diaktifkan",
+                    "Perlu persetujuan backend dan kualifikasi kamera sebelum pembayaran.");
                 break;
             }
             if (!app->has_record || app->store_status < 0 ||
@@ -403,10 +424,33 @@ static void event_received(soundbox_ui_t *ui,
             snprintf(app->receipt.merchant_name_l2, sizeof(app->receipt.merchant_name_l2),
                 "%s", app->stored.settings.merchant_name_l2);
             snprintf(app->receipt.nmid, sizeof(app->receipt.nmid),
-                "%s", app->stored.settings.merchant_nmid);
+                "%s",                 app->stored.settings.merchant_nmid);
             snprintf(app->receipt.vehicle, sizeof(app->receipt.vehicle), "%s", app->vehicle);
-            snprintf(app->receipt.method, sizeof(app->receipt.method), "QRIS MPM");
+            snprintf(app->receipt.method, sizeof(app->receipt.method), "%s",
+                app->method == SOUNDBOX_UI_CPM ? "QRIS CPM" :
+                app->method == SOUNDBOX_UI_TAP ? "QRIS TAP" : "QRIS MPM");
             app->receipt.amount = app->amount;
+            if (app->method == SOUNDBOX_UI_TAP) {
+                app->page = SOUNDBOX_TAP_CAPTURE;
+                app->started = now;
+                app->tap_capture_pending = true;
+                if (!rendered(app, soundbox_ui_show_waiting(app->ui,
+                    SOUNDBOX_UI_TAP, app->amount)))
+                    break;
+                if (!app->tap_capture ||
+                    !app->tap_capture(app->token, app->tap_user_data)) {
+                    app->tap_capture_pending = false;
+                    notice(app, "Tap tidak tersedia",
+                        "NFC gagal dimulai. Tidak ada permintaan dikirim.");
+                }
+                break;
+            }
+            if (app->method == SOUNDBOX_UI_CPM) {
+                app->page = SOUNDBOX_CPM_START;
+                rendered(app, soundbox_ui_show_waiting(app->ui,
+                    SOUNDBOX_UI_CPM, app->amount));
+                break;
+            }
             app->page = SOUNDBOX_REQUEST;
             job.kind = SB_JOB_QR;
             job.amount = app->amount;
@@ -428,6 +472,9 @@ static void event_received(soundbox_ui_t *ui,
             app->page = SOUNDBOX_CPM_SCAN;
             app->started = now;
             rendered(app, soundbox_ui_show_scanner(app->ui, app->amount));
+        } else if (app->page == SOUNDBOX_CPM_SCAN) {
+            soundbox_app_scan_complete(app,
+                soundbox_ui_scan_value(app->ui), now);
         }
         break;
     case SOUNDBOX_UI_SIM_SUCCESS:
@@ -535,6 +582,21 @@ bool soundbox_app_set_backend(soundbox_app_t *app, soundbox_submit_cb submit,
     app->submit = submit;
     app->backend_user_data = user_data;
     return soundbox_app_set_record(app, NULL, app->store_status);
+}
+
+bool soundbox_app_set_tap_capture(soundbox_app_t *app,
+    soundbox_tap_capture_cb capture, soundbox_tap_cancel_cb cancel,
+    void *user_data)
+{
+    if (!app || !capture || !cancel || app->config.simulation ||
+        app->page != SOUNDBOX_HOME) {
+        LV_LOG_ERROR("Invalid live NFC capture binding");
+        return false;
+    }
+    app->tap_capture = capture;
+    app->tap_cancel = cancel;
+    app->tap_user_data = user_data;
+    return true;
 }
 
 bool soundbox_app_waiting_payment(const soundbox_app_t *app)
@@ -651,6 +713,19 @@ bool soundbox_app_backend_complete(soundbox_app_t *app,
     }
     if (result->kind == SB_JOB_QR) {
         app->attempt = result->attempt;
+        if (app->method == SOUNDBOX_UI_CPM || app->method == SOUNDBOX_UI_TAP) {
+            bool accounted = result->accounting_status == SB_STORE_OK ||
+                result->accounting_status == SB_STORE_DUPLICATE;
+            bool ok = soundbox_app_payment_complete(app, result->token, true,
+                accounted ? "Pembayaran terkonfirmasi oleh layanan." :
+                    "Pembayaran terkonfirmasi. Total lokal perlu diperiksa.", now);
+            if (!accounted) {
+                app->returning = false;
+                return ok && rendered(app, soundbox_ui_set_result_state(app->ui,
+                    SOUNDBOX_PRINT_READY, "Total belum terjamin. Periksa riwayat."));
+            }
+            return ok;
+        }
         snprintf(app->payment_qr, sizeof(app->payment_qr), "%s", result->data.qr_content);
         if (!app->payment_qr[0])
             return notice(app, "Status belum diketahui", "Layanan tidak mengirim QR. Periksa riwayat.");
@@ -749,13 +824,87 @@ bool soundbox_app_key(soundbox_app_t *app, uint32_t key)
     return soundbox_ui_key(app->ui, key);
 }
 
+bool soundbox_app_scan_complete(soundbox_app_t *app, const char *content,
+    uint32_t now)
+{
+    struct soundbox_backend_job job = {0};
+    size_t length = 0;
+    if (!app || app->page != SOUNDBOX_CPM_SCAN || !app->submit ||
+        !SOUNDBOX_CPM_LIVE_ENABLED) {
+        LV_LOG_WARN("Discarding unexpected CPM scan completion");
+        return false;
+    }
+    if (content) {
+        while (length <= QR_REQUEST_CONTENT_MAX && content[length])
+            ++length;
+    }
+    if (!content || !length || length > QR_REQUEST_CONTENT_MAX) {
+        notice(app, "QR tidak valid", "Kode kosong atau melebihi batas yang didukung.");
+        return false;
+    }
+    job.kind = SB_JOB_QR;
+    job.amount = app->amount;
+    job.type = 2;
+    memcpy(job.qr_content, content, length + 1U);
+    job.attempt.merchant_generation = app->stored.merchant_generation;
+    job.attempt.date = app->stored.date;
+    snprintf(job.attempt.nmid, sizeof(job.attempt.nmid), "%s",
+        app->stored.settings.merchant_nmid);
+    app->page = SOUNDBOX_REQUEST;
+    app->started = now;
+    rendered(app, soundbox_ui_show_processing(app->ui, app->amount));
+    return submit_job(app, &job);
+}
+
+bool soundbox_app_tap_capture_complete(soundbox_app_t *app, uint32_t token,
+    enum qris_tap_result result, const char *content, uint32_t now)
+{
+    struct soundbox_backend_job job = {0};
+    if (!app || token != app->token || app->page != SOUNDBOX_TAP_CAPTURE ||
+        !app->tap_capture_pending) {
+        LV_LOG_WARN("Discarding stale or unexpected NFC capture completion");
+        return false;
+    }
+    app->tap_capture_pending = false;
+    if (result != QRIS_TAP_OK) {
+        const char *message = result == QRIS_TAP_TIMEOUT ?
+            "Waktu tap habis. Tidak ada permintaan dikirim." :
+            result == QRIS_TAP_CANCELLED ?
+            "Tap dibatalkan. Tidak ada permintaan dikirim." :
+            "Pembacaan NFC gagal. Tidak ada permintaan dikirim.";
+        return notice(app, "Tap gagal", message);
+    }
+    if (!qris_tap_base64_valid(content, QR_REQUEST_CONTENT_MAX + 1U)) {
+        return notice(app, "Data NFC tidak valid",
+            "Payload tidak sesuai format atau batas layanan.");
+    }
+    job.kind = SB_JOB_QR;
+    job.amount = app->amount;
+    job.type = 3;
+    snprintf(job.qr_content, sizeof(job.qr_content), "%s", content);
+    job.attempt.merchant_generation = app->stored.merchant_generation;
+    job.attempt.date = app->stored.date;
+    snprintf(job.attempt.nmid, sizeof(job.attempt.nmid), "%s",
+        app->stored.settings.merchant_nmid);
+    app->page = SOUNDBOX_REQUEST;
+    app->started = now;
+    rendered(app, soundbox_ui_show_processing(app->ui, app->amount));
+    return submit_job(app, &job);
+}
+
 void soundbox_app_tick(soundbox_app_t *app, uint32_t now)
 {
     if (!app) {
         LV_LOG_ERROR("Missing soundbox application");
         return;
     }
-    if (app->page == SOUNDBOX_CPM_SCAN &&
+    if (app->page == SOUNDBOX_TAP_CAPTURE && app->tap_capture_pending &&
+        (uint32_t)(now - app->started) >= SCAN_TIMEOUT_MS) {
+        if (app->tap_cancel)
+            app->tap_cancel(app->tap_user_data);
+        app->tap_capture_pending = false;
+        notice(app, "Waktu tap habis", "Tidak ada permintaan dikirim.");
+    } else if (app->page == SOUNDBOX_CPM_SCAN &&
         (uint32_t)(now - app->started) >= SCAN_TIMEOUT_MS) {
         app->page = SOUNDBOX_REQUEST;
         soundbox_app_payment_complete(app, app->token, false,

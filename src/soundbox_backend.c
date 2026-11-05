@@ -1,11 +1,17 @@
 #include "soundbox_backend.h"
 #include "https_client.h"
+#include "qris_tap.h"
 
 #include <cJSON.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifndef SIM_BUILD
+#define LOGGER_MODULE_NAME "backend"
+#include "libs/logger/logger.h"
+#endif
 
 #define RESPONSE_MAX 14000U
 
@@ -208,11 +214,14 @@ void soundbox_backend_execute(const struct soundbox_backend_job *job,
             job->type < 1U || job->type > 3U ||
             !memchr(job->qr_content, 0, sizeof(job->qr_content)) ||
             (job->type != 1 && !job->qr_content[0]) ||
+            (job->type == 3 &&
+             !qris_tap_base64_valid(job->qr_content, sizeof(job->qr_content))) ||
             !cJSON_AddNumberToObject(request, "request_data", job->amount) ||
             !cJSON_AddNumberToObject(request, "type", job->type) ||
             !cJSON_AddStringToObject(request, "qr_content", job->qr_content) ||
-            !cJSON_AddStringToObject(request, "invoice_trx_id", "") ||
-            !cJSON_AddStringToObject(request, "qr_content_id", ""))
+            (job->type != 3 &&
+             (!cJSON_AddStringToObject(request, "invoice_trx_id", "") ||
+              !cJSON_AddStringToObject(request, "qr_content_id", ""))))
             goto cleanup;
     } else if (job->kind == SB_JOB_DETAIL || job->kind == SB_JOB_RECEIPT) {
         if (!memchr(job->transaction_id, 0, sizeof(job->transaction_id)) ||
@@ -232,6 +241,14 @@ void soundbox_backend_execute(const struct soundbox_backend_job *job,
     if (!body || !response)
         goto cleanup;
     result->status = SB_BACKEND_NETWORK;
+#ifndef SIM_BUILD
+    if (job->kind == SB_JOB_QR && job->type == 3) {
+        size_t offset, total = strlen(body);
+        logger_error("Tap request POST %s, %u bytes\n", path, (unsigned)total);
+        for (offset = 0; offset < total; offset += 200U)
+            logger_error("Tap request body[%u]: %.200s\n", (unsigned)offset, body + offset);
+    }
+#endif
     if (https_client_post_json_verified(SOUNDBOX_BACKEND_HOST, path,
         SOUNDBOX_BACKEND_CA, body, response, RESPONSE_MAX, &length,
         &result->http_status, &result->submission_started) != 0)
@@ -239,6 +256,17 @@ void soundbox_backend_execute(const struct soundbox_backend_job *job,
     result->status = result->http_status == 400 ? SB_BACKEND_DECLINED :
         result->http_status == 401 || result->http_status == 403 ? SB_BACKEND_AUTH :
         result->http_status >= 500 ? SB_BACKEND_SERVER : SB_BACKEND_HTTP;
+#ifndef SIM_BUILD
+    if (job->kind == SB_JOB_QR && result->http_status != 200) {
+        char text[257];
+        size_t i, n = length < sizeof(text) - 1U ? length : sizeof(text) - 1U;
+        for (i = 0; i < n; ++i)
+            text[i] = response[i] >= 0x20 && response[i] < 0x7F ? (char)response[i] : '.';
+        text[n] = '\0';
+        logger_error("QR request HTTP %d, %u bytes: %s\n", result->http_status,
+            (unsigned)length, text);
+    }
+#endif
     if (result->http_status != 200)
         goto cleanup;
     result->status = SB_BACKEND_INVALID;

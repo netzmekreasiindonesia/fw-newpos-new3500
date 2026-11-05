@@ -25,6 +25,7 @@
 #include "printer_transport.h"
 #include "https_client.h"
 #include "qr_request.h"
+#include "qris_tap.h"
 #include "mqtt_listener.h"
 #include "soundbox_app.h"
 
@@ -32,7 +33,8 @@ enum worker_state { WORKER_IDLE, WORKER_QUEUED, WORKER_RUNNING, WORKER_DONE };
 enum printer_action { ACTION_QR, ACTION_RECEIPT, ACTION_GENERATE_QR,
                       ACTION_HTTPS_TEST, ACTION_SCAN, ACTION_COUNT,
                       ACTION_PAIR = ACTION_COUNT,
-                      ACTION_PRINT_GENERATED_QR, ACTION_PARKING };
+                      ACTION_PRINT_GENERATED_QR, ACTION_PARKING,
+                      ACTION_TAP_CAPTURE };
 
 static ble_device_info_t scan_devices[MAX_DEVICE_NUM];
 static int               scan_device_count;
@@ -60,6 +62,10 @@ static struct {
     struct soundbox_record storage_record;
     struct soundbox_backend_job parking_job;
     struct soundbox_backend_result parking_result;
+    enum qris_tap_result tap_result;
+    uint32_t tap_token;
+    int tap_cancel;
+    char tap_content[QR_REQUEST_CONTENT_MAX + 1U];
 } worker;
 
 static struct soundbox_store store;
@@ -153,6 +159,48 @@ static bool parking_submit(const struct soundbox_backend_job *job, void *user_da
 }
 #endif
 
+#ifndef SIM_BUILD
+static bool tap_capture_submit(uint32_t token, void *user_data)
+{
+    bool accepted = false;
+    (void)user_data;
+    pthread_mutex_lock(&worker.mutex);
+    if (!worker.stop && worker.state == WORKER_IDLE &&
+        SOUNDBOX_TAP_LIVE_ENABLED) {
+        worker.tap_token = token;
+        worker.tap_cancel = 0;
+        worker.tap_content[0] = '\0';
+        worker.action = ACTION_TAP_CAPTURE;
+        worker.state = WORKER_QUEUED;
+        accepted = true;
+    }
+    pthread_mutex_unlock(&worker.mutex);
+    if (!accepted)
+        logger_warn("NFC capture rejected: worker busy, stopping, or Tap disabled.\n");
+    return accepted;
+}
+
+static void tap_capture_cancel(void *user_data)
+{
+    (void)user_data;
+    pthread_mutex_lock(&worker.mutex);
+    if (worker.action == ACTION_TAP_CAPTURE &&
+        worker.state != WORKER_IDLE && worker.state != WORKER_DONE)
+        worker.tap_cancel = 1;
+    pthread_mutex_unlock(&worker.mutex);
+}
+
+static int tap_capture_cancelled(void *user_data)
+{
+    int cancelled;
+    (void)user_data;
+    pthread_mutex_lock(&worker.mutex);
+    cancelled = worker.tap_cancel || worker.stop;
+    pthread_mutex_unlock(&worker.mutex);
+    return cancelled;
+}
+#endif
+
 static void send_parking_receipt(struct soundbox_backend_result *result, bool test_receipt)
 {
     uint8_t payload[PRINT_JOB_BUFFER_SIZE];
@@ -210,14 +258,21 @@ static void execute_parking(void)
     if (job->kind == SB_JOB_QR) {
         int status;
         int64_t now = (int64_t)time(NULL);
-        if (!mqtt_available || !mqtt_listener_connected()) {
-            logger_error("MPM request not sent: MQTT disconnected.\n");
+        if ((job->type == 2 && !SOUNDBOX_CPM_LIVE_ENABLED) ||
+            (job->type == 3 && !SOUNDBOX_TAP_LIVE_ENABLED)) {
+            logger_error("QR payment blocked: backend contract is not approved.\n");
             return;
         }
-        pause = mqtt_listener_pause();
-        if (!pause) {
-            logger_error("MPM request not sent: cannot pause MQTT business dispatch.\n");
-            return;
+        if (job->type == 1) {
+            if (!mqtt_available || !mqtt_listener_connected()) {
+                logger_error("MPM request not sent: MQTT disconnected.\n");
+                return;
+            }
+            pause = mqtt_listener_pause();
+            if (!pause) {
+                logger_error("MPM request not sent: cannot pause MQTT business dispatch.\n");
+                return;
+            }
         }
         status = soundbox_store_rollover(&store, now);
         publish_storage(status);
@@ -225,7 +280,7 @@ static void execute_parking(void)
             job->attempt.merchant_generation != store.record.merchant_generation ||
             job->attempt.date != store.record.date ||
             strcmp(job->attempt.nmid, store.record.settings.merchant_nmid) != 0) {
-            logger_error("MPM request not sent: merchant/date snapshot changed or clock invalid.\n");
+            logger_error("QR payment not sent: merchant/date snapshot changed or clock invalid.\n");
             result->status = SB_BACKEND_STORAGE;
             goto resume;
         }
@@ -242,14 +297,25 @@ static void execute_parking(void)
         goto resume;
     }
     soundbox_backend_execute(job, result);
+    if (job->kind == SB_JOB_QR && (job->type == 2 || job->type == 3) &&
+        result->status == SB_BACKEND_OK) {
+        result->accounting_status = soundbox_store_account(&store,
+            &result->attempt, job->amount, (int64_t)time(NULL));
+        publish_storage(result->accounting_status);
+        if (result->accounting_status != SB_STORE_OK &&
+            result->accounting_status != SB_STORE_DUPLICATE)
+            logger_error("QR payment confirmed; local total requires review (storage=%d).\n",
+                result->accounting_status);
+    }
     if (job->kind == SB_JOB_RECEIPT && result->status == SB_BACKEND_OK)
         send_parking_receipt(result, false);
     logger_info("Parking job %d completed: result %d, HTTP %d.\n",
         job->kind, result->status, result->http_status);
 resume:
     if (job->kind == SB_JOB_QR && result->attempt.id &&
-        (!result->submission_started || result->status == SB_BACKEND_DECLINED ||
-         result->status == SB_BACKEND_AUTH)) {
+        (!result->submission_started ||
+         (job->type != 3 && (result->status == SB_BACKEND_DECLINED ||
+          result->status == SB_BACKEND_AUTH)))) {
         int status = soundbox_store_cancel(&store, result->attempt.id);
         publish_storage(status);
         if (status == SB_STORE_OK)
@@ -278,6 +344,20 @@ static void execute_action(enum printer_action action, char *message, size_t cap
     if (action == ACTION_PARKING) {
         execute_parking();
         snprintf(message, capacity, "%s", soundbox_backend_message(worker.parking_result.status));
+        return;
+    }
+    if (action == ACTION_TAP_CAPTURE) {
+#ifdef SIM_BUILD
+        worker.tap_result = QRIS_TAP_READER_ERROR;
+#else
+        worker.tap_result = qris_tap_native_capture(worker.tap_content,
+            sizeof(worker.tap_content), tap_capture_cancelled, NULL);
+#endif
+        snprintf(message, capacity, "%s", worker.tap_result == QRIS_TAP_OK ?
+            "NFC capture complete." :
+            worker.tap_result == QRIS_TAP_TIMEOUT ? "NFC tap timed out." :
+            worker.tap_result == QRIS_TAP_CANCELLED ? "NFC tap cancelled." :
+            "NFC capture failed.");
         return;
     }
     if (action != ACTION_PRINT_GENERATED_QR)
@@ -878,6 +958,9 @@ static int create_parking_screen(void)
 #ifndef SIM_BUILD
     if (!soundbox_app_set_backend(parking_app, parking_submit, NULL))
         logger_error("Live parking backend binding failed.\n");
+    if (!soundbox_app_set_tap_capture(parking_app, tap_capture_submit,
+        tap_capture_cancel, NULL))
+        logger_error("Live NFC capture binding failed.\n");
 #endif
     logger_info("Parking UI viewport: %dx%d; LVGL %d.%d.%d (physical display unqualified).\n",
         lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL),
@@ -987,6 +1070,9 @@ static void update_status(void)
     char message[sizeof(worker.message)];
     char qr_content[QR_REQUEST_CONTENT_MAX + 1U] = {0};
     enum printer_action last_action;
+    enum qris_tap_result tap_result = QRIS_TAP_READER_ERROR;
+    uint32_t tap_token = 0;
+    char tap_content[QR_REQUEST_CONTENT_MAX + 1U] = {0};
     int done = 0;
     static unsigned int last_dropped;
     unsigned int lost = mqtt_listener_dropped();
@@ -1029,6 +1115,11 @@ static void update_status(void)
         last_action = worker.last_action;
         if (last_action == ACTION_GENERATE_QR)
             snprintf(qr_content, sizeof(qr_content), "%s", worker.qr_content);
+        if (last_action == ACTION_TAP_CAPTURE) {
+            tap_result = worker.tap_result;
+            tap_token = worker.tap_token;
+            snprintf(tap_content, sizeof(tap_content), "%s", worker.tap_content);
+        }
         worker.state = WORKER_IDLE;
         done = 1;
     }
@@ -1039,6 +1130,10 @@ static void update_status(void)
             if (!parking_app || !soundbox_app_backend_complete(parking_app,
                 &worker.parking_result, lv_tick_get()))
                 logger_warn("Parking completion is no longer relevant; persisted attempt retained.\n");
+        } else if (last_action == ACTION_TAP_CAPTURE) {
+            if (!parking_app || !soundbox_app_tap_capture_complete(parking_app,
+                tap_token, tap_result, tap_content, lv_tick_get()))
+                logger_warn("NFC capture completion is no longer relevant.\n");
         } else if (last_action == ACTION_SCAN && scan_device_count > 0) {
             set_busy(0); /* re-enable main screen buttons before hiding screen */
             picker_screen_show();

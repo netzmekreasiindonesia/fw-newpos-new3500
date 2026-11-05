@@ -43,6 +43,7 @@ pack:
 	install -d -m 755 "$(NPK_STAGE)/$(TARGET)/resources" "$(NPK_STAGE)/$(TARGET)/resources/certs" "$(NPK_STAGE)/$(TARGET)/resources/certs/stg"
 	install -m 644 resources/certs/stg/ca.pem resources/certs/stg/starfield-g2.pem resources/certs/stg/starfield-class2.pem resources/certs/stg/amazon-cross.pem resources/certs/stg/cil.crt resources/certs/stg/pri.key "$(NPK_STAGE)/$(TARGET)/resources/certs/stg/"
 	install -m 644 resources/certs/stg/backend-ca.pem "$(NPK_STAGE)/$(TARGET)/resources/certs/stg/"
+	cp -r resources/images "$(NPK_STAGE)/$(TARGET)/resources/"
 	cd "$(NPK_STAGE)" && umask 077 && zip -rq "$(TARGET).npk" "$(TARGET)" Desktop
 	mv "$(NPK_STAGE)/$(TARGET).npk" "$(INSTALL_PATH)/$(TARGET).npk"
 	chmod 600 "$(INSTALL_PATH)/$(TARGET).npk"
